@@ -27,14 +27,12 @@ jobs:
           ANDROID_HOME: /usr/local/lib/android/sdk
         run: |
           echo "Starting build for: ${{ github.event.client_payload.app_name }}"
-          git clone --depth 1 https://github.com/huzefa99/Android-WebView-Template.git template
+          git clone --depth 1 https://github.com/01one/AndroidWebviewTemplate.git template
           cd template
           
-          # استبدال رابط المتجر واسم التطبيق داخل ملف النصوص
-          if [ -f "app/src/main/res/values/strings.xml" ]; then
-            sed -i "s|https://example.com|${{ github.event.client_payload.store_url }}|g" app/src/main/res/values/strings.xml || true
-            sed -i "s|WebView App|${{ github.event.client_payload.app_name }}|g" app/src/main/res/values/strings.xml || true
-          fi
+          # استبدال رابط المتجر داخل الكود
+          find app/src/main/ -name "*.java" -exec sed -i "s|https://example.com|${{ github.event.client_payload.store_url }}|g" {} + || true
+          find app/src/main/res/values/ -name "*.xml" -exec sed -i "s|Example|${{ github.event.client_payload.app_name }}|g" {} + || true
           
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
