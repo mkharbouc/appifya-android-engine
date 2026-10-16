@@ -5,6 +5,9 @@ on:
     types: [build_apk]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,30 +25,34 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Prepare App Source
+      - name: Clone and Setup WebView App
         run: |
-          echo "App Name: ${{ github.event.client_payload.app_name }}"
-          echo "Store URL: ${{ github.event.client_payload.store_url }}"
-          # استنساخ قالب WebView خفيف وتطبيق الإعدادات
-          git clone https://github.com/swayangjit/Android-Webview-App-Template.git app-template
-          cd app-template
-          # تعديل رابط المتجر داخل الكود
-          sed -i "s|https://google.com|${{ github.event.client_payload.store_url }}|g" app/src/main/java/com/swayangjit/webview/MainActivity.java || true
+          echo "Starting build for: ${{ github.event.client_payload.app_name }}"
+          git clone --depth 1 https://github.com/huzefa99/Android-WebView-Template.git template
+          cd template
+          # تعديل رابط المتجر داخل الإعدادات
+          if [ -f "app/src/main/res/values/strings.xml" ]; then
+            sed -i "s|https://example.com|${{ github.event.client_payload.store_url }}|g" app/src/main/res/values/strings.xml || true
+          fi
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --no-daemon
 
-      - name: Rename & Upload APK Artifact
+      - name: Find & Prepare APK
+        run: |
+          mkdir -p output
+          find template/app/build/outputs/apk/ -name "*.apk" -exec cp {} output/app-release.apk \;
+
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.client_payload.app_name }}-apk
-          path: app-template/app/build/outputs/apk/debug/app-debug.apk
+          name: app-apk
+          path: output/app-release.apk
 
-      - name: Create GitHub Release with APK
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'repository_dispatch'
         with:
-          tag_name: apk-${{ github.event.client_payload.app_id }}-${{ github.run_number }}
-          name: "APK Build: ${{ github.event.client_payload.app_name }}"
-          files: app-template/app/build/outputs/apk/debug/app-debug.apk
+          tag_name: release-${{ github.event.client_payload.app_id }}-${{ github.run_number }}
+          name: "${{ github.event.client_payload.app_name }} APK"
+          files: output/app-release.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
