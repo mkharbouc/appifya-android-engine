@@ -17,30 +17,44 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Clone and Setup WebView App
-        env:
-          ANDROID_HOME: /usr/local/lib/android/sdk
+      - name: Setup Android SDK
         run: |
-          echo "Starting build for: ${{ github.event.client_payload.app_name }}"
-          git clone --depth 1 https://github.com/01one/AndroidWebviewTemplate.git template
-          cd template
-          
-          # استبدال رابط المتجر داخل الكود
-          find app/src/main/ -name "*.java" -exec sed -i "s|https://example.com|${{ github.event.client_payload.store_url }}|g" {} + || true
-          find app/src/main/res/values/ -name "*.xml" -exec sed -i "s|Example|${{ github.event.client_payload.app_name }}|g" {} + || true
-          
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          yes | sdkmanager --licenses || true
 
-      - name: Find & Prepare APK
+      - name: Setup Node.js & Bubblewrap
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Initialize and Build Android APK
+        run: |
+          npm install -g @bubblewrap/cli
+          
+          APP_NAME="${{ github.event.client_payload.app_name }}"
+          STORE_URL="${{ github.event.client_payload.store_url }}"
+          
+          # إنشاء مشروع أندرويد قياسي متوافق مع متطلبات النظام
+          bubblewrap init --manifest="${STORE_URL}/manifest.json" --directory=android-app || {
+            # في حال لم يكن للموقع ملف manifest، نقوم بإنشائه افتراضياً
+            mkdir -p android-app
+            cd android-app
+            npx @bubblewrap/cli init --url="$STORE_URL" --manifest="$STORE_URL"
+            cd ..
+          }
+          
+          cd android-app
+          bubblewrap build --skipPwaValidation
+
+      - name: Prepare APK Output
         run: |
           mkdir -p output
-          find template/app/build/outputs/apk/ -name "*.apk" -exec cp {} output/${{ github.event.client_payload.app_name }}-app.apk \;
+          find android-app -name "*.apk" -exec cp {} output/${{ github.event.client_payload.app_name }}.apk \;
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
