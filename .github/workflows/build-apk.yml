@@ -198,9 +198,19 @@ jobs:
           </manifest>
           EOF
 
-      - name: Build Android APK with Gradle Wrapper
+            - name: Build Android APK with Gradle Wrapper
         run: |
           cd android-app
+
+          cat << 'EOF' > gradle.properties
+          android.useAndroidX=true
+          android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          EOF
+
+          gradle wrapper --gradle-version 8.5
+          chmod +x gradlew
+          ./gradlew assembleDebug
           gradle wrapper --gradle-version 8.5
           chmod +x gradlew
           ./gradlew assembleDebug
