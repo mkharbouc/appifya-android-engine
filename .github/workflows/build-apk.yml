@@ -2,15 +2,36 @@ name: Build Android APK
 
 on:
   repository_dispatch:
-    types: [build_apk]
+    types:
+      - build_apk
+
   workflow_dispatch:
+    inputs:
+      app_name:
+        description: "Application name"
+        required: true
+        default: "Appifya App"
+      store_url:
+        description: "Store URL"
+        required: true
+        default: "https://appifya.app"
+      app_id:
+        description: "App ID"
+        required: false
+        default: "manual-build"
 
 permissions:
   contents: write
 
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
+
+    env:
+      APP_NAME: ${{ github.event.client_payload.app_name || inputs.app_name || 'Appifya App' }}
+      STORE_URL: ${{ github.event.client_payload.store_url || inputs.store_url || 'https://appifya.app' }}
+      APP_ID: ${{ github.event.client_payload.app_id || inputs.app_id || 'manual-build' }}
 
     steps:
       - name: Checkout Repository
@@ -19,24 +40,42 @@ jobs:
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          java-version: "17"
+          distribution: "temurin"
+          cache: gradle
 
       - name: Accept Android SDK Licenses
         run: |
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
 
-      - name: Generate Android Native WebView Project
-        env:
-          APP_NAME: ${{ github.event.client_payload.app_name }}
-          STORE_URL: ${{ github.event.client_payload.store_url }}
+      - name: Validate build inputs
+        shell: bash
         run: |
+          set -euo pipefail
+
+          if [ -z "$APP_NAME" ]; then
+            echo "APP_NAME is empty"
+            exit 1
+          fi
+
+          if [[ ! "$STORE_URL" =~ ^https:// ]]; then
+            echo "STORE_URL must start with https://"
+            exit 1
+          fi
+
+          echo "Building application: $APP_NAME"
+          echo "Target URL: $STORE_URL"
+
+      - name: Generate Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+
           mkdir -p android-app/app/src/main/java/com/appifya/app
           mkdir -p android-app/app/src/main/res/layout
           mkdir -p android-app/app/src/main/res/values
 
-          # settings.gradle
-          cat << 'EOF' > android-app/settings.gradle
+          cat <<'EOF' > android-app/settings.gradle
           pluginManagement {
               repositories {
                   google()
@@ -44,6 +83,7 @@ jobs:
                   gradlePluginPortal()
               }
           }
+
           dependencyResolutionManagement {
               repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
               repositories {
@@ -51,25 +91,30 @@ jobs:
                   mavenCentral()
               }
           }
+
           rootProject.name = "Appifya"
-          include ':app'
+          include(":app")
           EOF
 
-          # build.gradle (Project level)
-          cat << 'EOF' > android-app/build.gradle
+          cat <<'EOF' > android-app/build.gradle
           plugins {
-              id 'com.android.application' version '8.2.2' apply false
+              id "com.android.application" version "8.2.2" apply false
           }
           EOF
 
-          # app/build.gradle
-          cat << 'EOF' > android-app/app/build.gradle
+          cat <<'EOF' > android-app/gradle.properties
+          android.useAndroidX=true
+          android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          EOF
+
+          cat <<'EOF' > android-app/app/build.gradle
           plugins {
-              id 'com.android.application'
+              id "com.android.application"
           }
 
           android {
-              namespace 'com.appifya.app'
+              namespace "com.appifya.app"
               compileSdk 34
 
               defaultConfig {
@@ -84,10 +129,12 @@ jobs:
                   release {
                       minifyEnabled false
                   }
+
                   debug {
                       debuggable true
                   }
               }
+
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
                   targetCompatibility JavaVersion.VERSION_17
@@ -95,20 +142,20 @@ jobs:
           }
 
           dependencies {
-              implementation 'androidx.appcompat:appcompat:1.6.1'
-              implementation 'androidx.webkit:webkit:1.10.0'
+              implementation "androidx.appcompat:appcompat:1.6.1"
+              implementation "androidx.webkit:webkit:1.10.0"
           }
           EOF
 
-          # strings.xml
-          cat << EOF > android-app/app/src/main/res/values/strings.xml
+          cat <<EOF > android-app/app/src/main/res/values/strings.xml
+          <?xml version="1.0" encoding="utf-8"?>
           <resources>
-              <string name="app_name">$APP_NAME</string>
+              <string name="app_name">${APP_NAME}</string>
           </resources>
           EOF
 
-          # styles.xml لتفادي خطأ الثيم
-          cat << 'EOF' > android-app/app/src/main/res/values/styles.xml
+          cat <<'EOF' > android-app/app/src/main/res/values/styles.xml
+          <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <style name="AppTheme" parent="Theme.AppCompat.Light.NoActionBar">
                   <item name="android:windowNoTitle">true</item>
@@ -118,21 +165,21 @@ jobs:
           </resources>
           EOF
 
-          # activity_main.xml
-          cat << 'EOF' > android-app/app/src/main/res/layout/activity_main.xml
+          cat <<'EOF' > android-app/app/src/main/res/layout/activity_main.xml
           <?xml version="1.0" encoding="utf-8"?>
           <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
               android:layout_width="match_parent"
               android:layout_height="match_parent">
+
               <WebView
                   android:id="@+id/webview"
                   android:layout_width="match_parent"
                   android:layout_height="match_parent" />
+
           </FrameLayout>
           EOF
 
-          # MainActivity.java
-          cat << EOF > android-app/app/src/main/java/com/appifya/app/MainActivity.java
+          cat <<EOF > android-app/app/src/main/java/com/appifya/app/MainActivity.java
           package com.appifya.app;
 
           import android.annotation.SuppressLint;
@@ -140,6 +187,7 @@ jobs:
           import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
+
           import androidx.appcompat.app.AppCompatActivity;
 
           public class MainActivity extends AppCompatActivity {
@@ -152,6 +200,7 @@ jobs:
                   setContentView(R.layout.activity_main);
 
                   webView = findViewById(R.id.webview);
+
                   WebSettings settings = webView.getSettings();
                   settings.setJavaScriptEnabled(true);
                   settings.setDomStorageEnabled(true);
@@ -161,7 +210,7 @@ jobs:
                   settings.setSupportZoom(true);
 
                   webView.setWebViewClient(new WebViewClient());
-                  webView.loadUrl("$STORE_URL");
+                  webView.loadUrl("${STORE_URL}");
               }
 
               @Override
@@ -175,62 +224,84 @@ jobs:
           }
           EOF
 
-          # AndroidManifest.xml
-          cat << 'EOF' > android-app/app/src/main/AndroidManifest.xml
+          cat <<'EOF' > android-app/app/src/main/AndroidManifest.xml
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
               <application
+                  android:allowBackup="true"
                   android:label="@string/app_name"
                   android:theme="@style/AppTheme"
-                  android:usesCleartextTraffic="true">
+                  android:usesCleartextTraffic="false">
+
                   <activity
                       android:name=".MainActivity"
-                      android:exported="true"
-                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:exported="true">
+
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
+
                   </activity>
               </application>
+
           </manifest>
           EOF
 
-            - name: Build Android APK with Gradle Wrapper
+      - name: Build Android APK
+        shell: bash
         run: |
+          set -euo pipefail
+
           cd android-app
 
-          cat << 'EOF' > gradle.properties
-          android.useAndroidX=true
-          android.enableJetifier=true
-          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
-          EOF
-
           gradle wrapper --gradle-version 8.5
           chmod +x gradlew
-          ./gradlew assembleDebug
-          gradle wrapper --gradle-version 8.5
-          chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --stacktrace
 
-      - name: Collect APK
+      - name: Prepare APK file
+        shell: bash
         run: |
-          mkdir -p output
-          cp android-app/app/build/outputs/apk/debug/app-debug.apk output/${{ github.event.client_payload.app_name }}.apk
+          set -euo pipefail
 
-      - name: Upload APK Artifact
+          mkdir -p output
+
+          SAFE_NAME="$(echo "$APP_NAME" | tr -cd '[:alnum:]_.-' | cut -c1-60)"
+
+          if [ -z "$SAFE_NAME" ]; then
+            SAFE_NAME="appifya-app"
+          fi
+
+          cp android-app/app/build/outputs/apk/debug/app-debug.apk \
+            "output/${SAFE_NAME}.apk"
+
+          echo "APK_FILE=output/${SAFE_NAME}.apk" >> "$GITHUB_ENV"
+          echo "SAFE_NAME=${SAFE_NAME}" >> "$GITHUB_ENV"
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.client_payload.app_name }}-apk
-          path: output/*.apk
+          name: ${{ env.SAFE_NAME }}-apk
+          path: ${{ env.APK_FILE }}
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.event.client_payload.app_id }}-${{ github.run_number }}
-          name: "${{ github.event.client_payload.app_name }} Android APK"
-          files: output/*.apk
+          tag_name: build-${{ env.APP_ID }}-${{ github.run_number }}
+          name: "${{ env.APP_NAME }} Android APK"
+          body: |
+            Android APK generated by Appifya.
+
+            Application: ${{ env.APP_NAME }}
+            Website: ${{ env.STORE_URL }}
+            Workflow run: ${{ github.run_number }}
+          files: ${{ env.APK_FILE }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
