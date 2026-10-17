@@ -22,39 +22,178 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android SDK
+      - name: Generate Android Native WebView Project
+        env:
+          APP_NAME: ${{ github.event.client_payload.app_name }}
+          STORE_URL: ${{ github.event.client_payload.store_url }}
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          yes | sdkmanager --licenses || true
+          mkdir -p android-app/app/src/main/java/com/appifya/app
+          mkdir -p android-app/app/src/main/res/layout
+          mkdir -p android-app/app/src/main/res/values
 
-      - name: Setup Node.js & Bubblewrap
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Initialize and Build Android APK
-        run: |
-          npm install -g @bubblewrap/cli
-          
-          APP_NAME="${{ github.event.client_payload.app_name }}"
-          STORE_URL="${{ github.event.client_payload.store_url }}"
-          
-          # إنشاء مشروع أندرويد قياسي متوافق مع متطلبات النظام
-          bubblewrap init --manifest="${STORE_URL}/manifest.json" --directory=android-app || {
-            # في حال لم يكن للموقع ملف manifest، نقوم بإنشائه افتراضياً
-            mkdir -p android-app
-            cd android-app
-            npx @bubblewrap/cli init --url="$STORE_URL" --manifest="$STORE_URL"
-            cd ..
+          # settings.gradle
+          cat << 'EOF' > android-app/settings.gradle
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
           }
-          
-          cd android-app
-          bubblewrap build --skipPwaValidation
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "Appifya"
+          include ':app'
+          EOF
 
-      - name: Prepare APK Output
+          # build.gradle (Project level)
+          cat << 'EOF' > android-app/build.gradle
+          plugins {
+              id 'com.android.application' version '8.2.2' apply false
+          }
+          EOF
+
+          # app/build.gradle
+          cat << 'EOF' > android-app/app/build.gradle
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.appifya.app'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.appifya.app"
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+                  debug {
+                      debuggable true
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'androidx.webkit:webkit:1.10.0'
+          }
+          EOF
+
+          # strings.xml
+          cat << EOF > android-app/app/src/main/res/values/strings.xml
+          <resources>
+              <string name="app_name">$APP_NAME</string>
+          </resources>
+          EOF
+
+          # activity_main.xml
+          cat << 'EOF' > android-app/app/src/main/res/layout/activity_main.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+              <WebView
+                  android:id="@+id/webview"
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent" />
+          </FrameLayout>
+          EOF
+
+          # MainActivity.java
+          cat << EOF > android-app/app/src/main/java/com/appifya/app/MainActivity.java
+          package com.appifya.app;
+
+          import android.annotation.SuppressLint;
+          import android.os.Bundle;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import androidx.appcompat.app.AppCompatActivity;
+
+          public class MainActivity extends AppCompatActivity {
+              private WebView webView;
+
+              @SuppressLint("SetJavaScriptEnabled")
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  setContentView(R.layout.activity_main);
+
+                  webView = findViewById(R.id.webview);
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setDatabaseEnabled(true);
+                  settings.setUseWideViewPort(true);
+                  settings.setLoadWithOverviewMode(true);
+                  settings.setSupportZoom(true);
+
+                  webView.setWebViewClient(new WebViewClient());
+                  webView.loadUrl("$STORE_URL");
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+          }
+          EOF
+
+          # AndroidManifest.xml
+          cat << 'EOF' > android-app/app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <application
+                  android:label="@string/app_name"
+                  android:theme="@style/Theme.AppCompat.NoActionBar"
+                  android:usesCleartextTraffic="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+      - name: Build Android APK with Gradle Wrapper
+        run: |
+          cd android-app
+          gradle wrapper --gradle-version 8.5
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Collect APK
         run: |
           mkdir -p output
-          find android-app -name "*.apk" -exec cp {} output/${{ github.event.client_payload.app_name }}.apk \;
+          cp android-app/app/build/outputs/apk/debug/app-debug.apk output/${{ github.event.client_payload.app_name }}.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -65,8 +204,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: release-${{ github.event.client_payload.app_id }}-${{ github.run_number }}
-          name: "${{ github.event.client_payload.app_name }} APK"
+          tag_name: build-${{ github.event.client_payload.app_id }}-${{ github.run_number }}
+          name: "${{ github.event.client_payload.app_name }} Android APK"
           files: output/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
