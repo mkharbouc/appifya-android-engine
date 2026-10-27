@@ -32,6 +32,7 @@ jobs:
       APP_NAME: ${{ github.event.client_payload.app_name || inputs.app_name || 'Appifya App' }}
       STORE_URL: ${{ github.event.client_payload.store_url || inputs.store_url || 'https://appifya.app' }}
       APP_ID: ${{ github.event.client_payload.app_id || inputs.app_id || 'manual-build' }}
+      IS_WATERMARKED: ${{ github.event.client_payload.is_watermarked || 'false' }}
 
     steps:
       - name: Checkout Repository
@@ -165,7 +166,44 @@ jobs:
           </resources>
           EOF
 
-          cat <<'EOF' > android-app/app/src/main/res/layout/activity_main.xml
+          if [ "$IS_WATERMARKED" = "true" ]; then
+            cat <<'EOF' > android-app/app/src/main/res/layout/activity_main.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+
+              <WebView
+                  android:id="@+id/webview"
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent"
+                  android:layout_above="@+id/watermark_bar" />
+
+              <LinearLayout
+                  android:id="@+id/watermark_bar"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_alignParentBottom="true"
+                  android:background="#0F172A"
+                  android:gravity="center"
+                  android:orientation="horizontal"
+                  android:padding="8dp">
+
+                  <TextView
+                      android:id="@+id/watermark_text"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:text="Made with Appifya.app - Upgrade for Google Play"
+                      android:textColor="#38BDF8"
+                      android:textSize="11sp"
+                      android:textStyle="bold" />
+
+              </LinearLayout>
+
+          </RelativeLayout>
+          EOF
+          else
+            cat <<'EOF' > android-app/app/src/main/res/layout/activity_main.xml
           <?xml version="1.0" encoding="utf-8"?>
           <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
               android:layout_width="match_parent"
@@ -178,6 +216,7 @@ jobs:
 
           </FrameLayout>
           EOF
+          fi
 
           cat <<EOF > android-app/app/src/main/java/com/appifya/app/MainActivity.java
           package com.appifya.app;
