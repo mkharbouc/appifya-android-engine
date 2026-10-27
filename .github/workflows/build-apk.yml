@@ -19,6 +19,34 @@ on:
         description: "App ID"
         required: false
         default: "manual-build"
+      logo_url:
+        description: "Logo URL"
+        required: false
+        default: ""
+      theme_color:
+        description: "Theme Color"
+        required: false
+        default: "#6366f1"
+      admob_app_id:
+        description: "AdMob App ID"
+        required: false
+        default: ""
+      admob_banner_unit_id:
+        description: "AdMob Banner Unit ID"
+        required: false
+        default: ""
+      admob_interstitial_unit_id:
+        description: "AdMob Interstitial Unit ID"
+        required: false
+        default: ""
+      is_watermarked:
+        description: "Is Watermarked"
+        required: false
+        default: "false"
+      package_type:
+        description: "Package Type (apk_direct | aab_bundle | apk_watermarked)"
+        required: false
+        default: "apk_direct"
 
 permissions:
   contents: write
@@ -32,7 +60,13 @@ jobs:
       APP_NAME: ${{ github.event.client_payload.app_name || inputs.app_name || 'Appifya App' }}
       STORE_URL: ${{ github.event.client_payload.store_url || inputs.store_url || 'https://appifya.app' }}
       APP_ID: ${{ github.event.client_payload.app_id || inputs.app_id || 'manual-build' }}
-      IS_WATERMARKED: ${{ github.event.client_payload.is_watermarked || 'false' }}
+      LOGO_URL: ${{ github.event.client_payload.logo_url || inputs.logo_url || '' }}
+      THEME_COLOR: ${{ github.event.client_payload.theme_color || inputs.theme_color || '#6366f1' }}
+      ADMOB_APP_ID: ${{ github.event.client_payload.admob_app_id || inputs.admob_app_id || '' }}
+      ADMOB_BANNER_UNIT_ID: ${{ github.event.client_payload.admob_banner_unit_id || inputs.admob_banner_unit_id || '' }}
+      ADMOB_INTERSTITIAL_UNIT_ID: ${{ github.event.client_payload.admob_interstitial_unit_id || inputs.admob_interstitial_unit_id || '' }}
+      IS_WATERMARKED: ${{ github.event.client_payload.is_watermarked || inputs.is_watermarked || 'false' }}
+      PACKAGE_TYPE: ${{ github.event.client_payload.package_type || inputs.package_type || 'apk_direct' }}
 
     steps:
       - name: Checkout Repository
@@ -43,7 +77,17 @@ jobs:
         with:
           java-version: "17"
           distribution: "temurin"
-          
+
+      - name: Setup Gradle Build Cache
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Pillow for Icon Processing
+        run: pip install --quiet pillow requests
 
       - name: Accept Android SDK Licenses
         run: |
@@ -66,8 +110,12 @@ jobs:
 
           echo "Building application: $APP_NAME"
           echo "Target URL: $STORE_URL"
+          echo "Logo URL: $LOGO_URL"
+          echo "Theme Color: $THEME_COLOR"
+          echo "AdMob App ID: $ADMOB_APP_ID"
+          echo "Is Watermarked: $IS_WATERMARKED"
 
-      - name: Generate Android project
+      - name: Generate Android project structure
         shell: bash
         run: |
           set -euo pipefail
@@ -75,6 +123,11 @@ jobs:
           mkdir -p android-app/app/src/main/java/com/appifya/app
           mkdir -p android-app/app/src/main/res/layout
           mkdir -p android-app/app/src/main/res/values
+          mkdir -p android-app/app/src/main/res/mipmap-mdpi
+          mkdir -p android-app/app/src/main/res/mipmap-hdpi
+          mkdir -p android-app/app/src/main/res/mipmap-xhdpi
+          mkdir -p android-app/app/src/main/res/mipmap-xxhdpi
+          mkdir -p android-app/app/src/main/res/mipmap-xxxhdpi
 
           cat <<'EOF' > android-app/settings.gradle
           pluginManagement {
@@ -109,7 +162,73 @@ jobs:
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           EOF
 
-          cat <<'EOF' > android-app/app/build.gradle
+      - name: Generate and resize app icons from LOGO_URL
+        shell: python
+        run: |
+          import os, sys, requests
+          from io import BytesIO
+          from PIL import Image, ImageDraw, ImageFont
+
+          logo_url = os.environ.get('LOGO_URL', '').strip()
+          app_name = os.environ.get('APP_NAME', 'Appifya').strip()
+          theme_color = os.environ.get('THEME_COLOR', '#6366f1').strip()
+          if not theme_color.startswith('#'):
+              theme_color = '#6366f1'
+
+          base_img = None
+          if logo_url and logo_url.startswith('http'):
+              try:
+                  resp = requests.get(logo_url, timeout=15)
+                  if resp.status_code == 200 and len(resp.content) > 100:
+                      base_img = Image.open(BytesIO(resp.content)).convert('RGBA')
+                      print(f"Successfully downloaded app logo from: {logo_url}")
+              except Exception as e:
+                  print(f"Logo download failed: {e}")
+
+          # Fallback: create beautiful icon with app initial and theme color
+          if base_img is None:
+              print("Generating styled initial-based icon...")
+              base_img = Image.new('RGBA', (512, 512), theme_color)
+              draw = ImageDraw.Draw(base_img)
+              initial = (app_name[0] if app_name else 'A').upper()
+              # Draw a clean circular badge with initial
+              draw.ellipse((40, 40, 472, 472), fill=theme_color, outline=(255, 255, 255, 220), width=16)
+              try:
+                  font = ImageFont.load_default()
+              except:
+                  font = None
+              draw.text((256, 256), initial, fill=(255, 255, 255, 255), anchor="mm")
+
+          # Resize into standard Android mipmap densities
+          sizes = {
+              'mipmap-mdpi': 48,
+              'mipmap-hdpi': 72,
+              'mipmap-xhdpi': 96,
+              'mipmap-xxhdpi': 144,
+              'mipmap-xxxhdpi': 192,
+          }
+
+          for folder, size in sizes.items():
+              target_dir = os.path.join('android-app', 'app', 'src', 'main', 'res', folder)
+              os.makedirs(target_dir, exist_ok=True)
+              resized = base_img.resize((size, size), Image.Resampling.LANCZOS)
+              resized.save(os.path.join(target_dir, 'ic_launcher.png'), 'PNG')
+              resized.save(os.path.join(target_dir, 'ic_launcher_round.png'), 'PNG')
+
+          print("Generated launcher icons for all Android mipmap densities!")
+
+      - name: Generate build.gradle with optional AdMob dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ADMOB_DEP=""
+          if [ -n "$ADMOB_APP_ID" ]; then
+            ADMOB_DEP='implementation "com.google.android.gms:play-services-ads:23.0.0"'
+            echo "AdMob ads enabled in build.gradle"
+          fi
+
+          cat <<EOF > android-app/app/build.gradle
           plugins {
               id "com.android.application"
           }
@@ -130,7 +249,6 @@ jobs:
                   release {
                       minifyEnabled false
                   }
-
                   debug {
                       debuggable true
                   }
@@ -145,8 +263,14 @@ jobs:
           dependencies {
               implementation "androidx.appcompat:appcompat:1.6.1"
               implementation "androidx.webkit:webkit:1.10.0"
+              $ADMOB_DEP
           }
           EOF
+
+      - name: Generate strings.xml and styles.xml
+        shell: bash
+        run: |
+          set -euo pipefail
 
           cat <<EOF > android-app/app/src/main/res/values/strings.xml
           <?xml version="1.0" encoding="utf-8"?>
@@ -166,10 +290,20 @@ jobs:
           </resources>
           EOF
 
-          if [ "$IS_WATERMARKED" = "true" ]; then
-            cat <<'EOF' > android-app/app/src/main/res/layout/activity_main.xml
-          <?xml version="1.0" encoding="utf-8"?>
+      - name: Generate activity_main.xml layout (WebView + optional AdMob + optional Watermark)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat <<'EOF' > generate_layout.py
+          import os
+
+          is_watermarked = os.environ.get('IS_WATERMARKED', 'false') == 'true'
+          admob_banner = os.environ.get('ADMOB_BANNER_UNIT_ID', '').strip()
+
+          layout = """<?xml version="1.0" encoding="utf-8"?>
           <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:ads="http://schemas.android.com/apk/res-auto"
               android:layout_width="match_parent"
               android:layout_height="match_parent">
 
@@ -177,69 +311,149 @@ jobs:
                   android:id="@+id/webview"
                   android:layout_width="match_parent"
                   android:layout_height="match_parent"
-                  android:layout_above="@+id/watermark_bar" />
+                  android:layout_above="@+id/bottom_container" />
 
               <LinearLayout
-                  android:id="@+id/watermark_bar"
+                  android:id="@+id/bottom_container"
                   android:layout_width="match_parent"
                   android:layout_height="wrap_content"
                   android:layout_alignParentBottom="true"
-                  android:background="#0F172A"
-                  android:gravity="center"
-                  android:orientation="horizontal"
-                  android:padding="8dp">
+                  android:orientation="vertical">
+          """
 
-                  <TextView
-                      android:id="@+id/watermark_text"
-                      android:layout_width="wrap_content"
+          if admob_banner:
+              layout += f"""
+                  <com.google.android.gms.ads.AdView
+                      android:id="@+id/adView"
+                      android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:text="Made with Appifya.app - Upgrade for Google Play"
-                      android:textColor="#38BDF8"
-                      android:textSize="11sp"
-                      android:textStyle="bold" />
+                      ads:adSize="BANNER"
+                      ads:adUnitId="{admob_banner}" />
+          """
 
+          if is_watermarked:
+              layout += """
+                  <LinearLayout
+                      android:id="@+id/watermark_bar"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:background="#0F172A"
+                      android:gravity="center"
+                      android:orientation="horizontal"
+                      android:padding="8dp">
+
+                      <TextView
+                          android:id="@+id/watermark_text"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="Made with Appifya.app - Upgrade for Google Play"
+                          android:textColor="#38BDF8"
+                          android:textSize="11sp"
+                          android:textStyle="bold" />
+
+                  </LinearLayout>
+          """
+
+          layout += """
               </LinearLayout>
 
           </RelativeLayout>
+          """
+
+          with open('android-app/app/src/main/res/layout/activity_main.xml', 'w') as f:
+              f.write(layout)
           EOF
-          else
-            cat <<'EOF' > android-app/app/src/main/res/layout/activity_main.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-              android:layout_width="match_parent"
-              android:layout_height="match_parent">
 
-              <WebView
-                  android:id="@+id/webview"
-                  android:layout_width="match_parent"
-                  android:layout_height="match_parent" />
+          python3 generate_layout.py
 
-          </FrameLayout>
-          EOF
-          fi
+      - name: Generate MainActivity.java with optional AdMob logic
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          cat <<EOF > android-app/app/src/main/java/com/appifya/app/MainActivity.java
-          package com.appifya.app;
+          cat <<'EOF' > generate_main_activity.py
+          import os
+
+          store_url = os.environ.get('STORE_URL', 'https://appifya.app')
+          admob_app_id = os.environ.get('ADMOB_APP_ID', '').strip()
+          admob_banner = os.environ.get('ADMOB_BANNER_UNIT_ID', '').strip()
+          admob_interstitial = os.environ.get('ADMOB_INTERSTITIAL_UNIT_ID', '').strip()
+
+          code = f"""package com.appifya.app;
 
           import android.annotation.SuppressLint;
           import android.os.Bundle;
           import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
-
           import androidx.appcompat.app.AppCompatActivity;
+          """
 
-          public class MainActivity extends AppCompatActivity {
+          if admob_app_id:
+              code += """
+          import com.google.android.gms.ads.MobileAds;
+          import com.google.android.gms.ads.AdRequest;
+          import com.google.android.gms.ads.AdView;
+          """
+
+          if admob_interstitial:
+              code += """
+          import com.google.android.gms.ads.interstitial.InterstitialAd;
+          import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback;
+          import com.google.android.gms.ads.LoadAdError;
+          """
+
+          code += f"""
+          public class MainActivity extends AppCompatActivity {{
               private WebView webView;
+          """
 
+          if admob_interstitial:
+              code += """    private InterstitialAd mInterstitialAd;\n"""
+
+          code += f"""
               @SuppressLint("SetJavaScriptEnabled")
               @Override
-              protected void onCreate(Bundle savedInstanceState) {
+              protected void onCreate(Bundle savedInstanceState) {{
                   super.onCreate(savedInstanceState);
                   setContentView(R.layout.activity_main);
+          """
 
+          if admob_app_id:
+              code += """
+                  // Initialize Google Mobile Ads SDK
+                  MobileAds.initialize(this, initializationStatus -> {});
+          """
+              if admob_banner:
+                  code += """
+                  try {
+                      AdView adView = findViewById(R.id.adView);
+                      if (adView != null) {
+                          AdRequest adRequest = new AdRequest.Builder().build();
+                          adView.loadAd(adRequest);
+                      }
+                  } catch (Exception ignored) {}
+          """
+              if admob_interstitial:
+                  code += f"""
+                  try {{
+                      AdRequest adRequest = new AdRequest.Builder().build();
+                      InterstitialAd.load(this, "{admob_interstitial}", adRequest,
+                          new InterstitialAdLoadCallback() {{
+                              @Override
+                              public void onAdLoaded(InterstitialAd interstitialAd) {{
+                                  mInterstitialAd = interstitialAd;
+                              }}
+                              @Override
+                              public void onAdFailedToLoad(LoadAdError loadAdError) {{
+                                  mInterstitialAd = null;
+                              }}
+                          }});
+                  }} catch (Exception ignored) {{}}
+          """
+
+          code += f"""
                   webView = findViewById(R.id.webview);
-
                   WebSettings settings = webView.getSettings();
                   settings.setJavaScriptEnabled(true);
                   settings.setDomStorageEnabled(true);
@@ -249,22 +463,49 @@ jobs:
                   settings.setSupportZoom(true);
 
                   webView.setWebViewClient(new WebViewClient());
-                  webView.loadUrl("${STORE_URL}");
-              }
+                  webView.loadUrl("{store_url}");
+              }}
 
               @Override
-              public void onBackPressed() {
-                  if (webView.canGoBack()) {
+              public void onBackPressed() {{
+          """
+
+          if admob_interstitial:
+              code += """
+                  if (mInterstitialAd != null) {
+                      mInterstitialAd.show(this);
+                      mInterstitialAd = null;
+                      return;
+                  }
+          """
+
+          code += """
+                  if (webView != null && webView.canGoBack()) {
                       webView.goBack();
                   } else {
                       super.onBackPressed();
                   }
               }
           }
+          """
+
+          with open('android-app/app/src/main/java/com/appifya/app/MainActivity.java', 'w') as f:
+              f.write(code)
           EOF
 
-          cat <<'EOF' > android-app/app/src/main/AndroidManifest.xml
-          <?xml version="1.0" encoding="utf-8"?>
+          python3 generate_main_activity.py
+
+      - name: Generate AndroidManifest.xml with app icon and AdMob metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat <<'EOF' > generate_manifest.py
+          import os
+
+          admob_app_id = os.environ.get('ADMOB_APP_ID', '').strip()
+
+          manifest = """<?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
               <uses-permission android:name="android.permission.INTERNET" />
@@ -272,10 +513,21 @@ jobs:
 
               <application
                   android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
                   android:label="@string/app_name"
                   android:theme="@style/AppTheme"
                   android:usesCleartextTraffic="false">
+          """
 
+          if admob_app_id:
+              manifest += f"""
+                  <meta-data
+                      android:name="com.google.android.gms.ads.APPLICATION_ID"
+                      android:value="{admob_app_id}" />
+          """
+
+          manifest += """
                   <activity
                       android:name=".MainActivity"
                       android:configChanges="orientation|screenSize|keyboardHidden"
@@ -290,9 +542,15 @@ jobs:
               </application>
 
           </manifest>
+          """
+
+          with open('android-app/app/src/main/AndroidManifest.xml', 'w') as f:
+              f.write(manifest)
           EOF
 
-      - name: Build Android APK
+          python3 generate_manifest.py
+
+      - name: Build Android Packages (APK and optional AAB)
         shell: bash
         run: |
           set -euo pipefail
@@ -301,9 +559,16 @@ jobs:
 
           gradle wrapper --gradle-version 8.5
           chmod +x gradlew
+
+          echo "Starting assembleDebug..."
           ./gradlew assembleDebug --stacktrace
 
-      - name: Prepare APK file
+          if [ "$PACKAGE_TYPE" = "aab_bundle" ]; then
+            echo "Building Google Play Store Bundle (.aab)..."
+            ./gradlew bundleDebug --stacktrace || true
+          fi
+
+      - name: Prepare Output Files
         shell: bash
         run: |
           set -euo pipefail
@@ -311,7 +576,6 @@ jobs:
           mkdir -p output
 
           SAFE_NAME="$(echo "$APP_NAME" | tr -cd '[:alnum:]_.-' | cut -c1-60)"
-
           if [ -z "$SAFE_NAME" ]; then
             SAFE_NAME="appifya-app"
           fi
@@ -322,11 +586,17 @@ jobs:
           echo "APK_FILE=output/${SAFE_NAME}.apk" >> "$GITHUB_ENV"
           echo "SAFE_NAME=${SAFE_NAME}" >> "$GITHUB_ENV"
 
-      - name: Upload APK artifact
+          # Copy AAB if generated
+          if [ -f "android-app/app/build/outputs/bundle/debug/app-debug.aab" ]; then
+            cp android-app/app/build/outputs/bundle/debug/app-debug.aab "output/${SAFE_NAME}.aab"
+            echo "AAB_FILE=output/${SAFE_NAME}.aab" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.SAFE_NAME }}-apk
-          path: ${{ env.APK_FILE }}
+          name: ${{ env.SAFE_NAME }}-packages
+          path: output/*
           if-no-files-found: error
           retention-days: 30
 
@@ -336,11 +606,11 @@ jobs:
           tag_name: build-${{ env.APP_ID }}-${{ github.run_number }}
           name: "${{ env.APP_NAME }} Android APK"
           body: |
-            Android APK generated by Appifya.
+            Android application generated by Appifya.
 
             Application: ${{ env.APP_NAME }}
             Website: ${{ env.STORE_URL }}
             Workflow run: ${{ github.run_number }}
-          files: ${{ env.APK_FILE }}
+          files: output/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
